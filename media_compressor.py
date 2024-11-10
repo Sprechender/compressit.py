@@ -140,7 +140,11 @@ class MediaCompressor:
                     print(f"Skipped {input_path.name} (already optimized)")
                     self.compression_stats['files_skipped'] += 1
                     if progress_callback:
-                        progress_callback('skipped')
+                        progress_callback({
+                            'skipped': True,
+                            'current_file': input_path.name,
+                            'reason': 'already optimized'
+                        })
                     return False
                     
                 print(f"Compressed image: {input_path.name} (ratio: {compression_ratio:.2f})")
@@ -259,114 +263,69 @@ class MediaCompressor:
             print(f"Unsupported format: {suffix}")
             return False
 
-    def compress_directory(self, directory: str, quality: int = 85, use_hardware: bool = True, 
-                           codec: str = 'hevc', progress_callback=None, thread_count: int = None,
-                           process_images: bool = True, process_videos: bool = True, 
-                           replace_files: bool = False, cancel_check=None):
-        """
-        Compress files in directory with option to replace originals
-        
-        Args:
-            replace_files: If True, replace original files with compressed versions
-        """
-        # Add detailed progress information
+    def compress_directory(self, media_files, output_dir, quality, thread_count, progress_callback=None, cancel_check=None, use_hardware=True, codec='h265', replace_files=False):
+        """Compress multiple files with progress tracking and cancellation support"""
+        total_files = len(media_files)
+        successful = 0
         self.compression_stats = {
             'original_size': 0,
             'compressed_size': 0,
             'files_processed': 0,
-            'files_skipped': 0,
-            'current_file': '',
-            'estimated_time': 0
+            'files_skipped': 0
         }
-        
-        # Use default thread count if none specified
-        if thread_count is None:
-            thread_count = multiprocessing.cpu_count()
-        
-        media_files = self.find_media(directory)
-        total_files = len(media_files)
-        
-        if total_files == 0:
-            return self._get_stats(0, 0)
-        
-        processed_count = 0
-        successful = 0
-        
+
         def update_progress():
             if progress_callback:
-                progress_info = {
-                    'progress': (processed_count / total_files) * 100,
-                    'current_file': self.compression_stats['current_file'],
-                    'files_processed': processed_count,
+                progress_callback({
+                    'progress': (successful / total_files * 100) if total_files > 0 else 0,
+                    'files_processed': successful,
                     'total_files': total_files
-                }
-                progress_callback(progress_info)
-        
-        def process_single_file(file):
-            nonlocal processed_count, successful
+                })
+
+        def process_single_file(file_path):
+            nonlocal successful
+            
+            # Check for cancellation
             if cancel_check and cancel_check():
-                return False
-                
+                return
+            
             try:
-                # Create output directory first
-                compressed_dir = Path(directory) / 'compressed'
-                compressed_dir.mkdir(exist_ok=True)
-                output_path = compressed_dir / file.name
-
-                # Update current file in progress
-                self.compression_stats['current_file'] = file.name
-                update_progress()
+                output_path = output_dir / file_path.name
+                if file_path.suffix.lower() in self.supported_image_formats:
+                    result = self.compress_image(file_path, output_path, quality, progress_callback)
+                else:
+                    result = self.compress_video(file_path, output_path, quality, use_hardware, codec, progress_callback)
                 
-                result = False
-                if file.suffix.lower() in self.supported_image_formats and process_images:
-                    result = self.compress_image(file, output_path=output_path, quality=quality)
-                elif file.suffix.lower() in self.supported_video_formats and process_videos:
-                    result = self.compress_video(
-                        input_path=str(file),
-                        output_path=str(output_path),
-                        quality=quality,
-                        use_hardware=use_hardware,
-                        codec=codec
-                    )
-
-                if result and replace_files:
-                    try:
-                        # Create backup directory
-                        backup_dir = Path(directory) / '.compressit_backup'
-                        backup_dir.mkdir(exist_ok=True)
-                        backup_path = backup_dir / file.name
-                        
-                        # Backup original and replace with compressed
-                        shutil.copy2(file, backup_path)
-                        shutil.move(str(output_path), str(file))
-                    except Exception as e:
-                        print(f"Error replacing file {file}: {e}")
-                        result = False
-                
-                processed_count += 1
                 if result:
                     successful += 1
-                
-                update_progress()
-                return result
-                
+                    
+                if progress_callback:
+                    progress_callback({
+                        'progress': (successful / total_files * 100) if total_files > 0 else 0,
+                        'files_processed': successful,
+                        'total_files': total_files,
+                        'current_file': file_path.name
+                    })
+                    
             except Exception as e:
-                print(f"Error processing {file}: {str(e)}")
-                processed_count += 1
-                update_progress()
-                return False
-        
+                print(f"Error processing {file_path}: {e}")
+                if progress_callback:
+                    progress_callback('error')
+
         # Process files with thread pool
         with ThreadPoolExecutor(max_workers=thread_count) as executor:
             futures = []
             for f in media_files:
                 if cancel_check and cancel_check():
                     executor.shutdown(wait=False)
-                    return self._get_stats(0, 0)
+                    return self._get_stats(total_files, successful)
                 futures.append(executor.submit(process_single_file, f))
             
             # Wait for completion and handle errors
             for future in concurrent.futures.as_completed(futures):
+                if cancel_check and cancel_check():
+                    executor.shutdown(wait=False)
+                    break
                 try:
                     future.result()
                 except Exception as e:

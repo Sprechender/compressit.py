@@ -16,7 +16,6 @@ from PIL import Image, ImageTk
 import io
 import base64
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-import shutil
 
 def get_sv_ttk_path():
     """Get the path to sv_ttk theme files"""
@@ -315,6 +314,11 @@ class MediaCompressorGUI:
         self.directory = filedialog.askdirectory()
         if self.directory:
             self.status_var.set(f"Selected: {self.directory}")
+            # Show directory selection notification
+            self.show_notification(
+                "Directory Selected",
+                f"Selected directory: {self.directory}"
+            )
 
     def start_compression(self):
         """Start the compression process"""
@@ -331,8 +335,15 @@ class MediaCompressorGUI:
                 'compressed_size': 0,
                 'successful': 0,
                 'total_files': 0,
-                'skipped': 0
+                'skipped': 0,
+                'ratio': 0
             }
+            
+            # Show notification
+            self.show_notification(
+                "Compression Started",
+                f"Starting compression of files in {self.directory}"
+            )
             
             # Disable start button and show cancel button
             self.start_button.grid_remove()
@@ -364,16 +375,26 @@ class MediaCompressorGUI:
             # Create compressor instance
             self.compressor = MediaCompressor()
             
-            # Run compression
+            # Get list of media files first
+            media_files = self.get_media_files()
+            if not media_files:
+                self.status_var.set("No files to process")
+                self.compression_complete()
+                return
+            
+            # Create output directory
+            output_dir = Path(self.directory) / 'compressed'
+            output_dir.mkdir(exist_ok=True)
+            
+            # Run compression with correct arguments
             stats = self.compressor.compress_directory(
-                directory=self.directory,
+                media_files=media_files,
+                output_dir=output_dir,
                 quality=quality,
+                thread_count=thread_count,
+                progress_callback=self.update_progress,
                 use_hardware=self.hw_var.get(),
                 codec=self.codec_var.get(),
-                progress_callback=self.update_progress,
-                thread_count=thread_count,
-                process_images=self.process_images_var.get(),
-                process_videos=self.process_videos_var.get(),
                 replace_files=self.replace_files_var.get(),
                 cancel_check=lambda: not self.compression_in_progress
             )
@@ -392,30 +413,44 @@ class MediaCompressorGUI:
     def update_progress(self, progress_info):
         """Update the progress bar and file count"""
         if isinstance(progress_info, dict):
-            # Update progress bar
-            self.progress['value'] = progress_info['progress']
+            # Update progress bar if progress info exists
+            if 'progress' in progress_info:
+                self.progress['value'] = progress_info['progress']
+                
+                # Update file count
+                self.file_count.set(
+                    f"Files: {progress_info['files_processed']}/{progress_info['total_files']}"
+                )
             
-            # Update file count
-            self.file_count.set(
-                f"Files: {progress_info['files_processed']}/{progress_info['total_files']}"
-            )
+            # Check for skipped files
+            if progress_info.get('skipped'):
+                self.show_notification(
+                    "File Skipped",
+                    f"Skipped: {progress_info['current_file']} ({progress_info.get('reason', 'unknown reason')})"
+                )
             
-            # Update status
+            # Update status for current file
             if 'current_file' in progress_info:
-                self.status_var.set(f"Processing: {progress_info['current_file']}")
+                current_file = progress_info['current_file']
+                self.status_var.set(f"Processing: {current_file}")
         
-        elif progress_info == 'skipped':
-            # Handle skipped files
-            pass
-        elif progress_info == 'error':
-            # Handle errors
-            pass
+        elif isinstance(progress_info, str):
+            if progress_info == 'error':
+                self.show_notification(
+                    "Error",
+                    "An error occurred during compression"
+                )
 
     def cancel_compression(self):
         """Cancel the compression process"""
-        self.is_cancelled = True
-        self.status_var.set("Cancelling compression...")
-        self.cancel_button.configure(state='disabled')
+        if self.compression_in_progress:
+            self.is_cancelled = True
+            self.status_var.set("Cancelling compression...")
+            self.cancel_button.configure(state='disabled')
+            self.show_notification(
+                "Cancelling",
+                "Stopping compression process..."
+            )
 
     def compression_complete(self):
         """Handle completion of compression process"""
@@ -431,11 +466,21 @@ class MediaCompressorGUI:
             self.status_var.set("No compression results available")
             return
 
+        # Calculate results
+        space_saved = self.compression_results['original_size'] - self.compression_results['compressed_size']
+        space_saved_mb = space_saved / (1024 * 1024)
+        
+        # Show completion notification
+        self.show_notification(
+            "Compression Complete",
+            f"Successfully compressed {self.compression_results['successful']} files\n"
+            f"Space saved: {space_saved_mb:.1f} MB"
+        )
+        
         # Show the summary window
         CompressionSummaryWindow(self, self.compression_results)
         
         # Update status
-        space_saved = self.compression_results['original_size'] - self.compression_results['compressed_size']
         self.status_var.set("Compression complete! Switch to the summary window for details.")
         self.progress['value'] = 100
 
@@ -500,107 +545,121 @@ class MediaCompressorGUI:
 
     def show_notification(self, title, message):
         """Show a temporary notification window"""
-        # Calculate position based on existing notifications
-        screen_width = self.root.winfo_screenwidth()
-        screen_height = self.root.winfo_screenheight()
-        notification_height = 100
-        
-        # Calculate base position (bottom right)
-        x = screen_width - 420
-        y = screen_height - 140
-        
-        # Adjust y position based on active notifications
-        total_height = (notification_height + self.notification_padding) * len(self.active_notifications)
-        y -= total_height
-        
-        # Create notification window
-        notification = tk.Toplevel(self.root)
-        notification.withdraw()  # Hide initially to prevent white flash
-        
-        # Configure window
-        notification.title("")
-        notification.geometry(f"400x{notification_height}+{x}+{y}")
-        notification.resizable(False, False)
-        notification.overrideredirect(True)
-        
-        # Configure style for notification
-        self.style.configure('Notification.TFrame', background='#2c2c2c')
-        self.style.configure('NotificationTitle.TLabel', 
-                           font=('Helvetica', 11, 'bold'),
-                           foreground='white',
-                           background='#2c2c2c')
-        self.style.configure('NotificationMessage.TLabel',
-                           font=('Helvetica', 10),
-                           foreground='#e0e0e0',
-                           background='#2c2c2c')
-        
-        # Create main frame
-        main_frame = ttk.Frame(notification, style='Notification.TFrame')
-        main_frame.pack(fill="both", expand=True)
-        
-        # Add title and message
-        ttk.Label(
-            main_frame,
-            text=title,
-            style='NotificationTitle.TLabel'
-        ).pack(anchor="w", padx=15, pady=(15, 5))
-        
-        ttk.Label(
-            main_frame,
-            text=message,
-            style='NotificationMessage.TLabel'
-        ).pack(anchor="w", padx=15, pady=(0, 15))
-        
-        # Keep track of this notification
-        self.active_notifications.append(notification)
-        
-        # Make window visible after configuring
-        notification.attributes('-alpha', 0.9)
-        notification.deiconify()
-        
-        def remove_notification():
-            if notification in self.active_notifications:
-                self.active_notifications.remove(notification)
-                self.reposition_notifications()
-                notification.destroy()
-        
-        def reposition_on_close():
-            remove_notification()
-            self.reposition_notifications()
-        
-        # Add hover effect
-        def on_enter(e):
-            notification.attributes('-alpha', 1.0)
-        
-        def on_leave(e):
-            notification.attributes('-alpha', 0.9)
-        
-        notification.bind('<Enter>', on_enter)
-        notification.bind('<Leave>', on_leave)
-        notification.bind('<Button-1>', lambda e: reposition_on_close())
-        
-        # Smooth fade-out
-        def fade_out():
-            alpha = notification.attributes('-alpha')
-            if alpha > 0:
-                notification.attributes('-alpha', alpha - 0.1)
-                notification.after(50, fade_out)
-            else:
-                reposition_on_close()
-        
-        # Auto-close and fade timers
-        notification.after(2500, fade_out)
-        
+        try:
+            # Calculate position based on existing notifications
+            screen_width = self.root.winfo_screenwidth()
+            screen_height = self.root.winfo_screenheight()
+            notification_height = 100
+            
+            # Calculate base position (bottom right)
+            x = screen_width - 420
+            y = screen_height - 140
+            
+            # Adjust y position based on active notifications
+            total_height = (notification_height + self.notification_padding) * len(self.active_notifications)
+            y -= total_height
+            
+            # Create notification window
+            notification = tk.Toplevel()
+            notification.withdraw()  # Hide initially to prevent flickering
+            
+            # Remove window decorations and set attributes
+            notification.overrideredirect(True)
+            notification.attributes('-topmost', True)
+            
+            # Configure window
+            notification.geometry(f"400x{notification_height}+{x}+{y}")
+            
+            # Create main frame with rounded corners and shadow effect
+            main_frame = ttk.Frame(notification, style='Notification.TFrame')
+            main_frame.pack(fill="both", expand=True)
+            
+            # Configure notification styles
+            self.style.configure('Notification.TFrame', background='#2c2c2c')
+            self.style.configure('NotificationTitle.TLabel', 
+                               font=('Helvetica', 11, 'bold'),
+                               foreground='white',
+                               background='#2c2c2c')
+            self.style.configure('NotificationMessage.TLabel',
+                               font=('Helvetica', 10),
+                               foreground='#e0e0e0',
+                               background='#2c2c2c')
+            
+            # Add title and message
+            ttk.Label(
+                main_frame,
+                text=title,
+                style='NotificationTitle.TLabel'
+            ).pack(anchor="w", padx=15, pady=(15, 5))
+            
+            ttk.Label(
+                main_frame,
+                text=message,
+                style='NotificationMessage.TLabel',
+                wraplength=370  # Prevent text from extending beyond window
+            ).pack(anchor="w", padx=15, pady=(0, 15))
+            
+            # Keep track of this notification
+            self.active_notifications.append(notification)
+            
+            # Make window visible with fade-in effect
+            notification.deiconify()
+            notification.attributes('-alpha', 0.0)
+            
+            def fade_in():
+                alpha = notification.attributes('-alpha')
+                if alpha < 0.9:
+                    notification.attributes('-alpha', alpha + 0.1)
+                    notification.after(20, fade_in)
+            
+            fade_in()
+            
+            def remove_notification():
+                if notification in self.active_notifications:
+                    self.active_notifications.remove(notification)
+                    notification.destroy()
+                    self.reposition_notifications()
+            
+            # Add hover effect
+            def on_enter(e):
+                notification.attributes('-alpha', 1.0)
+            
+            def on_leave(e):
+                notification.attributes('-alpha', 0.9)
+            
+            notification.bind('<Enter>', on_enter)
+            notification.bind('<Leave>', on_leave)
+            notification.bind('<Button-1>', lambda e: remove_notification())
+            
+            # Smooth fade-out
+            def fade_out():
+                alpha = notification.attributes('-alpha')
+                if alpha > 0:
+                    notification.attributes('-alpha', alpha - 0.1)
+                    notification.after(20, fade_out)
+                else:
+                    remove_notification()
+            
+            # Auto-close timer
+            notification.after(2500, fade_out)
+        except Exception as e:
+            print(f"Error showing notification: {e}")
+            # Fallback to console output if notification fails
+            print(f"{title}: {message}")
+
     def reposition_notifications(self):
         """Reposition all active notifications to stack properly"""
-        screen_width = self.root.winfo_screenwidth()
-        screen_height = self.root.winfo_screenheight()
-        notification_height = 100
-        
-        for i, notification in enumerate(reversed(self.active_notifications)):
-            x = screen_width - 420
-            y = screen_height - 140 - (i * (notification_height + self.notification_padding))
-            notification.geometry(f"400x{notification_height}+{x}+{y}")
+        try:
+            screen_width = self.root.winfo_screenwidth()
+            screen_height = self.root.winfo_screenheight()
+            notification_height = 100
+            
+            for i, notification in enumerate(reversed(self.active_notifications)):
+                x = screen_width - 420
+                y = screen_height - 140 - (i * (notification_height + self.notification_padding))
+                notification.geometry(f"400x{notification_height}+{x}+{y}")
+        except Exception as e:
+            print(f"Error repositioning notifications: {e}")
 
     def get_media_files(self):
         """Get all media files from the selected directory"""

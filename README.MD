@@ -1,4 +1,4 @@
-# 🗜️ compressit.py
+# 🖼️ compressit.py
 
 <div align="center">
 

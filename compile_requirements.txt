@@ -1,0 +1,8 @@
+pyinstaller
+pillow
+pillow-heif
+darkdetect
+pywinstyles
+ffmpeg-python
+matplotlib
+tkinterdnd2

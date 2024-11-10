@@ -15,11 +15,11 @@ VSVersionInfo(
         u'040904B0',
         [StringStruct(u'CompanyName', u'Sprechender'),
          StringStruct(u'FileDescription', u'compressit.py'),
-         StringStruct(u'FileVersion', u'1.0.0'),
+         StringStruct(u'FileVersion', u'1.0.1'),
          StringStruct(u'InternalName', u'compressit'),
          StringStruct(u'OriginalFilename', u'compressit.exe'),
          StringStruct(u'ProductName', u'compressit.py'),
-         StringStruct(u'ProductVersion', u'1.0.0')])
+         StringStruct(u'ProductVersion', u'1.0.1')])
       ]),
     VarFileInfo([VarStruct(u'Translation', [1033, 1200])])
   ]
